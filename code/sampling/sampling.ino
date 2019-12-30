@@ -3,8 +3,11 @@
 
 // This code is part of the guide at http://learn.adafruit.com/fft-fun-with-fourier-transforms/
 
-#define ARM_MATH_CM4
-#include <arm_math.h>
+#define ARM_MATH_CM4          //Fast Math Functions for Teensy
+#include <arm_math.h>         //Fast Math Functions for Teensy (DSP 1.5.3, CMSISv5.3)
+#include <Adafruit_DotStar.h> //LED Library
+#include <SPI.h>              //LED Coms
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -12,13 +15,13 @@
 // These values can be changed to alter the behavior of the spectrum display.
 ////////////////////////////////////////////////////////////////////////////////
 
-int SAMPLE_RATE_HZ = 9000;             // Sample rate of the audio in hertz.
-int LEDS_ENABLED = 0;                  // Control if the LED's should display the spectrum or not.  1 is true, 0 is false.
+int SAMPLE_RATE_HZ = 30000;             // Sample rate of the audio in hertz.
+int LEDS_ENABLED = 1;                  // Control if the LED's should display the spectrum or not.  1 is true, 0 is false.
                                        // Useful for turning the LED display on and off with commands from the serial port.
 const int FFT_SIZE = 1024;              // Size of the FFT.  Realistically can only be at most 256 
                                        // without running out of memory for buffers and other state.
 const int AUDIO_INPUT_PIN = A2;        // Input ADC pin for audio data.
-const int ANALOG_READ_RESOLUTION = 10; // Bits of resolution for the ADC.
+const int ANALOG_READ_RESOLUTION = 12; // Bits of resolution for the ADC.
 const int ANALOG_READ_AVERAGING = 4;  // Number of samples to average with each ADC reading.
 const int POWER_LED_PIN = 13;          // Output pin for power LED (pin 13 to use Teensy 3.0's onboard LED).
 
@@ -33,16 +36,32 @@ const int nfilt = 20;
 volatile float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];
 volatile float filter_banks;
 volatile float mel_points[nfilt+2];
-const float low_freq_mel=2595.0 * log10(1.0+(20.0/700.0));
+const int lowFreq = 100; //hz
+const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));
 const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));
 volatile float hz_points[nfilt+2];
 volatile int bin[nfilt+2];
-volatile float Xfilt[nfilt+2]={};
+volatile float Xfilt[nfilt]={};
 
+////////////////////////////////////
+/////Deeper work with beat tracking
+///////////////////////////////////
+volatile float scaledLog[nfilt];
+float maxLog,minLog;
+float lambda = 1.0;
+float logHistory[10];
+float logHistoryMax=0;
+float logHistoryMin=0;
 
 byte test = 0;
 long int timer1;
 
+////////////////////////////
+//Dotstar Stuff
+///////////////////////////
+#define NUMPIXELS 144
+Adafruit_DotStar strip(NUMPIXELS, DOTSTAR_RBG);
+byte intensity[NUMPIXELS]={};
 
 ////////////////////////////////////////////////////////////////////////////////
 // INTERNAL STATE
@@ -75,6 +94,7 @@ void setup() {
   pinMode(AUDIO_INPUT_PIN, INPUT);
   analogReadResolution(ANALOG_READ_RESOLUTION);
   analogReadAveraging(ANALOG_READ_AVERAGING);
+  analogReference(0);
   
   // Turn on the power indicator LED.
   pinMode(POWER_LED_PIN, OUTPUT);
@@ -87,6 +107,10 @@ void setup() {
   //Setup Mel Filters
   genMelFilter();
 
+  //Setup led strip
+  strip.begin();
+  strip.show();
+
   
   // Begin sampling audio
   samplingBegin();
@@ -95,6 +119,7 @@ void setup() {
 void loop() {
   // Calculate FFT if a full sample is available.
   if (samplingIsDone()) {
+    timer1=micros();
     // Run FFT on sample data.
 //    arm_cfft_radix4_instance_f32 fft_inst;
 //    arm_cfft_radix4_init_f32(&fft_inst, FFT_SIZE, 0, 1);
@@ -115,35 +140,38 @@ void loop() {
     //Set the DC offset value to 0 because it is useless
     magnitudes[0]=0;
 
+    //get the melfiltered data into Xfilt
     applyMelFilter();
-    
+
+    //now scale and set max/min
+    scaleMaxMel();
     
   
     if (LEDS_ENABLED == 1)
     {
-      //spectrumLoop();
+      ledIntensity();
     }
-  
     // Restart audio sampling.
+    timer1=micros()-timer1;
     samplingBegin();
   }
     
   // Parse any pending commands.
   parserLoop();
 
-  if (millis()-timer1 >= 1000){
-  if (test == 0){
-    digitalWrite(POWER_LED_PIN,HIGH);
-    test =1;
-    timer1=millis();
-  }
-  else {
-    digitalWrite(POWER_LED_PIN,LOW);
-    test =0;
-    //Serial.println(magnitudes[1]);
-    timer1=millis();
-  }
-  }
+//  if (millis()-timer1 >= 1000){
+//  if (test == 0){
+//    digitalWrite(POWER_LED_PIN,HIGH);
+//    test =1;
+//    timer1=millis();
+//  }
+//  else {
+//    digitalWrite(POWER_LED_PIN,LOW);
+//    test =0;
+//    //Serial.println(magnitudes[1]);
+//    timer1=millis();
+//  }
+//  }
 
   //Serial.println(analogRead(10));
   
@@ -244,7 +272,7 @@ void parseCommand(char* command) {
     }
   }
   else if (strcmp(command, "GET SAMPLES") == 0) {
-    for (int i = 0; i < FFT_SIZE; i+=2) {
+    for (int i = 0; i < FFT_SIZE; i+=1) {
       Serial.println(samples[i]);
     }
   }
@@ -274,6 +302,14 @@ void parseCommand(char* command) {
     for (int i=0;i<nfilt+2;++i){
       Serial.println(hz_points[i]);
     }
+  }
+  else if (strcmp(command, "GET SCALEDLOG") ==0 ) {
+    for (int i=0;i<nfilt;++i){
+      Serial.println(scaledLog[i]);
+    }
+  }
+  else if (strcmp(command, "GET TIME") == 0) {
+    Serial.println(timer1);
   }
   GET_AND_SET(SAMPLE_RATE_HZ)
   GET_AND_SET(LEDS_ENABLED)
@@ -331,6 +367,63 @@ void applyMelFilter() {
     
   }
 
+  
+}
+
+void scaleMaxMel() {
+
+  //log scale everything for human hearing
+  //scale to maximum on whatever box is highest
+  // store to scaledLog[]
+  // First FOR is doing logarithimic scaling, and storing the highest and lowest value
+  // Second FOR is storing the history of the highest value
+  // Next we find the max across the last logHistory, and store in logHistoryMax
+  // Last FOR sets the range of brightnesses we want and scales everything.
+  
+  minLog=10000000;
+  maxLog=0;
+
+  for (int i =0;i<nfilt;++i){
+    scaledLog[i]=log10(lambda*Xfilt[i] + 1.0);
+    maxLog = scaledLog[i]>maxLog ? scaledLog[i] : maxLog;
+    minLog = scaledLog[i]<minLog ? scaledLog[i] : minLog;
+  }
+  for (int i = 9; i>0;--i){
+    logHistory[i]=logHistory[i-1];
+  }
+  logHistory[0]=maxLog;
+  int tt; // VERY MESSY NEED TO CLEAN THIS SECTION UP
+  arm_max_f32(logHistory,10,&logHistoryMax,&tt);
+  
+
+  for (int i=0;i<nfilt;++i){
+    //scaledLog[i] = ((scaledLog[i]-minLog)/(maxLog-minLog));   //This is the min/max scaling standard.
+    byte M = 120*(maxLog/logHistoryMax); //Set Maximum Brightness
+    byte m = 0; //Set Min Brightness
+    float x = (m*maxLog - M*minLog)/(m-M);
+    float y = (m-M)/(minLog-maxLog);
+    scaledLog[i] = (scaledLog[i]-x)*y;
+    
+  }
+  
+  
+}
+
+void ledIntensity(){
+  //sets the intensity of LED's based on scaledLog currently
+  //intensities are held in the 'intensity' byte array
+  byte setcount=7;
+  float gamma = .8; //exponential filtering
+  
+  for (int i=0;i<nfilt;++i){
+    //intensity[i]=scaledLog[i]*120;
+    
+    for (int j=0; j<setcount; ++j){
+      strip.setPixelColor(i*setcount+j,strip.ColorHSV(65536/nfilt*i,255,int(scaledLog[i]*1.0*gamma+intensity[i]*(1-gamma))));
+    }
+    intensity[i]=scaledLog[i];
+  }
+  strip.show();
   
 }
 
