@@ -32,11 +32,11 @@ const int MAX_CHARS = 65;              // Max size of the input command buffer
 // MEL Filter Initialization
 ////////////////////////////
 
-const int nfilt = 20;
+const int nfilt = 30;
 volatile float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];
 volatile float filter_banks;
 volatile float mel_points[nfilt+2];
-const int lowFreq = 100; //hz
+const int lowFreq = 40; //hz
 const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));
 const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));
 volatile float hz_points[nfilt+2];
@@ -49,9 +49,9 @@ volatile float Xfilt[nfilt]={};
 volatile float scaledLog[nfilt];
 float maxLog,minLog;
 float lambda = 1.0;
-float logHistory[10];
-float logHistoryMax=0;
-float logHistoryMin=0;
+float XlogHistory[nfilt]={};
+float ODF=0;
+float ODFhistory[10];
 
 byte test = 0;
 long int timer1;
@@ -110,6 +110,7 @@ void setup() {
   //Setup led strip
   strip.begin();
   strip.show();
+  ledRainbow();
 
   
   // Begin sampling audio
@@ -383,28 +384,22 @@ void scaleMaxMel() {
   minLog=10000000;
   maxLog=0;
 
+  //Equation #1 applied to the Mel Filtered signal
   for (int i =0;i<nfilt;++i){
     scaledLog[i]=log10(lambda*Xfilt[i] + 1.0);
     maxLog = scaledLog[i]>maxLog ? scaledLog[i] : maxLog;
     minLog = scaledLog[i]<minLog ? scaledLog[i] : minLog;
   }
-  for (int i = 9; i>0;--i){
-    logHistory[i]=logHistory[i-1];
-  }
-  logHistory[0]=maxLog;
-  int tt; // VERY MESSY NEED TO CLEAN THIS SECTION UP
-  arm_max_f32(logHistory,10,&logHistoryMax,&tt);
-  
 
-  for (int i=0;i<nfilt;++i){
-    //scaledLog[i] = ((scaledLog[i]-minLog)/(maxLog-minLog));   //This is the min/max scaling standard.
-    byte M = 120*(maxLog/logHistoryMax); //Set Maximum Brightness
-    byte m = 0; //Set Min Brightness
-    float x = (m*maxLog - M*minLog)/(m-M);
-    float y = (m-M)/(minLog-maxLog);
-    scaledLog[i] = (scaledLog[i]-x)*y;
-    
+  //Now apply the half wave rectifier fuction on the history change
+  ODF=0;
+  for (int i = 0; i<nfilt;++i){
+    //H(x) = (x+ abs(x))/2
+    ODF+= ((scaledLog[i]-XlogHistory[i])+fabs(scaledLog[i]-XlogHistory[i]))/2.0;
+    XlogHistory[i]=scaledLog[i];
   }
+  
+  
   
   
 }
@@ -412,19 +407,26 @@ void scaleMaxMel() {
 void ledIntensity(){
   //sets the intensity of LED's based on scaledLog currently
   //intensities are held in the 'intensity' byte array
-  byte setcount=7;
-  float gamma = .8; //exponential filtering
+
+  float gamma = .99; //exponential filtering
+  //scaledBrightness= ODF< 0.0 ? 0.0 : scaledBrightness;
+  ODF-=5;
+  ODF = ODF < 0 ? 0 : ODF*5;
+  ODFhistory[1]=ODFhistory[0];
+  ODFhistory[0]=ODF;
+  ODF=(gamma*ODF)+(1-gamma)*ODFhistory[1];
+  strip.setBrightness(int(ODF));
+  strip.show();
+
   
-  for (int i=0;i<nfilt;++i){
-    //intensity[i]=scaledLog[i]*120;
-    
-    for (int j=0; j<setcount; ++j){
-      strip.setPixelColor(i*setcount+j,strip.ColorHSV(65536/nfilt*i,255,int(scaledLog[i]*1.0*gamma+intensity[i]*(1-gamma))));
-    }
-    intensity[i]=scaledLog[i];
+}
+
+void ledRainbow() {
+  //sets the strip to a rainbow set of colors
+  for (int i=0;i<NUMPIXELS;++i){
+    strip.setPixelColor(i,strip.ColorHSV(65536/NUMPIXELS*i,255,255));
   }
   strip.show();
-  
 }
 
     
