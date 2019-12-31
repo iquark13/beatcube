@@ -33,22 +33,23 @@ const int MAX_CHARS = 65;              // Max size of the input command buffer
 ////////////////////////////
 
 const int nfilt = 30;
-volatile float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];
-volatile float filter_banks;
-volatile float mel_points[nfilt+2];
-const int lowFreq = 40; //hz
+float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];
+float filter_banks;
+float mel_points[nfilt+2];
+const int lowFreq = 100; //hz
 const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));
 const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));
-volatile float hz_points[nfilt+2];
-volatile int bin[nfilt+2];
-volatile float Xfilt[nfilt]={};
+float hz_points[nfilt+2];
+int bin[nfilt+2];
+float Xfilt[nfilt]={};
 
 ////////////////////////////////////
 /////Deeper work with beat tracking
 ///////////////////////////////////
-volatile float scaledLog[nfilt];
+float scaledLog[nfilt];
 float maxLog,minLog;
 float lambda = 1.0;
+float gam = .97; //sized for 150hz cutoff with 30kHz sampleing rate
 float XlogHistory[nfilt]={};
 float ODF=0;
 float ODFhistory[10];
@@ -408,13 +409,13 @@ void ledIntensity(){
   //sets the intensity of LED's based on scaledLog currently
   //intensities are held in the 'intensity' byte array
 
-  float gamma = .99; //exponential filtering
+
   //scaledBrightness= ODF< 0.0 ? 0.0 : scaledBrightness;
   ODF-=5;
   ODF = ODF < 0 ? 0 : ODF*5;
   ODFhistory[1]=ODFhistory[0];
   ODFhistory[0]=ODF;
-  ODF=(gamma*ODF)+(1-gamma)*ODFhistory[1];
+  ODF=(gam*ODF)+(1-gam)*ODFhistory[1];
   strip.setBrightness(int(ODF));
   strip.show();
 
