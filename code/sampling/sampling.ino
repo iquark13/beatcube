@@ -52,7 +52,7 @@ float hannCoeff[FFT_SIZE]; //holds the coefficients for the hann window function
 ///////////////////////////////////
 float scaledLog[nfilt];
 float maxLog,minLog;
-float lambda = 1;
+float lambda = 5;
 float gam = 1.0; //sized for 150hz cutoff with 30kHz sampleing rate DO NOT USE THIS RIGHT NOW.
 float XlogHistory[nfilt]={};
 float ODF=0;
@@ -71,7 +71,7 @@ long int timer3;
 byte w1 = 3; //max frames
 byte w3 = 8; //mean frames
 byte w5 = 6; //how many frames between onsets
-float delta = 1;
+float delta = .25;
 float ODFCondition1 = 0;
 float ODFCondition2 = 0;
 int nlastonset = 0;
