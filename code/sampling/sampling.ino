@@ -15,17 +15,19 @@
 // These values can be changed to alter the behavior of the spectrum display.
 ////////////////////////////////////////////////////////////////////////////////
 
-int SAMPLE_RATE_HZ = 30000;             // Sample rate of the audio in hertz.
+int SAMPLE_RATE_HZ = 20000;             // Sample rate of the audio in hertz.
 int LEDS_ENABLED = 1;                  // Control if the LED's should display the spectrum or not.  1 is true, 0 is false.
                                        // Useful for turning the LED display on and off with commands from the serial port.
 const int FFT_SIZE = 1024;              // Size of the FFT.  Realistically can only be at most 256 
                                        // without running out of memory for buffers and other state.
-const int AUDIO_INPUT_PIN = A2;        // Input ADC pin for audio data.
+const int AUDIO_INPUT_PIN = A13;        // Input ADC pin for audio data.
 const int ANALOG_READ_RESOLUTION = 12; // Bits of resolution for the ADC.
 const int ANALOG_READ_AVERAGING = 4;  // Number of samples to average with each ADC reading.
 const int POWER_LED_PIN = 13;          // Output pin for power LED (pin 13 to use Teensy 3.0's onboard LED).
 
 const int MAX_CHARS = 65;              // Max size of the input command buffer
+bool sampleSetReady = false;          //primary full sample set ready
+bool sampleHalfReady = false;         //half sample set ready
 
 
 ////////////////////////////
@@ -43,26 +45,44 @@ float hz_points[nfilt+2];
 int bin[nfilt+2];
 float Xfilt[nfilt]={};
 
+float hannCoeff[FFT_SIZE]; //holds the coefficients for the hann window function.
+
 ////////////////////////////////////
 /////Deeper work with beat tracking
 ///////////////////////////////////
 float scaledLog[nfilt];
 float maxLog,minLog;
-float lambda = 1.0;
-float gam = .97; //sized for 150hz cutoff with 30kHz sampleing rate
+float lambda = 1;
+float gam = 1.0; //sized for 150hz cutoff with 30kHz sampleing rate DO NOT USE THIS RIGHT NOW.
 float XlogHistory[nfilt]={};
 float ODF=0;
-float ODFhistory[10];
-
+float ODFhistory[2];
+const int historyCount=1000;
+float History[historyCount];
 byte test = 0;
 long int timer1;
+long int timer2;
+long int timer3;
 
+//////////////////////////////////////////
+/////// Onset Detection Parameters
+//////////////////////////////////////////
+
+byte w1 = 3; //max frames
+byte w3 = 8; //mean frames
+byte w5 = 6; //how many frames between onsets
+float delta = 1;
+float ODFCondition1 = 0;
+float ODFCondition2 = 0;
+int nlastonset = 0;
+bool frameOnset = false;
 ////////////////////////////
-//Dotstar Stuff
+//LED Stuff
 ///////////////////////////
 #define NUMPIXELS 144
 Adafruit_DotStar strip(NUMPIXELS, DOTSTAR_RBG);
 byte intensity[NUMPIXELS]={};
+float bright;
 
 ////////////////////////////////////////////////////////////////////////////////
 // INTERNAL STATE
@@ -70,15 +90,17 @@ byte intensity[NUMPIXELS]={};
 ////////////////////////////////////////////////////////////////////////////////
 
 IntervalTimer samplingTimer;
-float32_t samples[FFT_SIZE];
-float32_t magnitudes[FFT_SIZE/2+1]; //This is the meat and potatoes = holds the 1024 FFT Bins
-float32_t output[FFT_SIZE+2];
+volatile float32_t sampleHolder[FFT_SIZE]={0};
+volatile float32_t samples[FFT_SIZE]={0};
+volatile float32_t finalSamples[FFT_SIZE]={0};
+volatile float32_t magnitudes[FFT_SIZE/2+1]; //This is the meat and potatoes = holds the 1024 FFT Bins
+volatile float32_t output[FFT_SIZE+2];
 int sampleCounter = 0;
 char commandBuffer[MAX_CHARS];
 
 /////Try some pointers?
 
-float32_t *samp = samples;
+float32_t *samp = finalSamples;
 float32_t *mag = output;
 
 
@@ -111,7 +133,8 @@ void setup() {
   //Setup led strip
   strip.begin();
   strip.show();
-  ledRainbow();
+  ledRainbow(100);
+
 
   
   // Begin sampling audio
@@ -132,12 +155,18 @@ void loop() {
     //new faster real FFT from the CMSIS-DSP v5.3 (v1.5.2 dsp)
     arm_rfft_fast_instance_f32 fft_inst;
     arm_rfft_fast_init_f32(&fft_inst, FFT_SIZE);
+    memcpy(finalSamples,samples,FFT_SIZE*sizeof(*samples)); //grab the latest set of samples from the buffer
+    arm_dot_prod_f32(finalSamples,hannCoeff,FFT_SIZE,finalSamples);//dot product the hann window with the samples
     arm_rfft_fast_f32(&fft_inst, samp,mag,0);
 
-    output[FFT_SIZE]=output[1];
+    output[FFT_SIZE]=output[1]; //Packed nyquist frequency moved to end
     output[1]=output[FFT_SIZE+1]=0;
 
     arm_cmplx_mag_f32(output,magnitudes,FFT_SIZE/2+1);
+
+    //Set the sample set to not-ready again.
+    sampleSetReady = false;
+    
 
     //Set the DC offset value to 0 because it is useless
     magnitudes[0]=0;
@@ -155,61 +184,46 @@ void loop() {
     }
     // Restart audio sampling.
     timer1=micros()-timer1;
-    samplingBegin();
   }
     
   // Parse any pending commands.
   parserLoop();
-
-//  if (millis()-timer1 >= 1000){
-//  if (test == 0){
-//    digitalWrite(POWER_LED_PIN,HIGH);
-//    test =1;
-//    timer1=millis();
-//  }
-//  else {
-//    digitalWrite(POWER_LED_PIN,LOW);
-//    test =0;
-//    //Serial.println(magnitudes[1]);
-//    timer1=millis();
-//  }
-//  }
-
-  //Serial.println(analogRead(10));
   
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-// UTILITY FUNCTIONS
-////////////////////////////////////////////////////////////////////////////////
-
-
-
-
-
-
 
 ////////////////////////////////////////////////////////////////////////////////
-// SPECTRUM DISPLAY FUNCTIONS
-///////////////////////////////////////////////////////////////////////////////
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////
+//
+//
 // SAMPLING FUNCTIONS
+//
+//
 ////////////////////////////////////////////////////////////////////////////////
 
 void samplingCallback() {
   // Read from the ADC and store the sample data
-  samples[sampleCounter] = (float32_t)analogRead(AUDIO_INPUT_PIN);
-  // Complex FFT functions require a coefficient for the imaginary part of the input.
-  // Since we only have real data, set this coefficient to zero.
+  sampleHolder[sampleCounter] = (float32_t)analogRead(AUDIO_INPUT_PIN);
   // Update sample buffer position and stop after the buffer is filled
   sampleCounter += 1;
+  //We want to sample at 100hz for FFT, so need to copy over and loop every 300 samples
+  if (sampleCounter >= 300){
+    //need to shift the samples down 300 spaces
+    samplingTimer.end();
+    memmove(samples,samples+(300),(FFT_SIZE-300) * sizeof(*samples)); //moves sample #300 to samples[0]
+    memcpy(samples+(FFT_SIZE-300),sampleHolder,300 * sizeof(*samples));
+    sampleSetReady = true;
+    sampleCounter = 0;
+    samplingBegin();
+
+  }
   if (sampleCounter >= FFT_SIZE) {
     samplingTimer.end();
+    memcpy(samples,sampleHolder,sizeof(sampleHolder));
+    sampleSetReady = true;
+    sampleHalfReady = false;
+    samplingBegin();
+
   }
 }
 
@@ -220,7 +234,7 @@ void samplingBegin() {
 }
 
 boolean samplingIsDone() {
-  return sampleCounter >= FFT_SIZE;
+  return sampleSetReady;
 }
 
 
@@ -311,7 +325,12 @@ void parseCommand(char* command) {
     }
   }
   else if (strcmp(command, "GET TIME") == 0) {
-    Serial.println(timer1);
+    Serial.println(timer3);
+  }
+  else if (strcmp(command, "GET ODF") ==0 ) {
+    for (int i=0;i<historyCount;++i){
+      Serial.println(History[i]);
+    }
   }
   GET_AND_SET(SAMPLE_RATE_HZ)
   GET_AND_SET(LEDS_ENABLED)
@@ -399,7 +418,41 @@ void scaleMaxMel() {
     ODF+= ((scaledLog[i]-XlogHistory[i])+fabs(scaledLog[i]-XlogHistory[i]))/2.0;
     XlogHistory[i]=scaledLog[i];
   }
+  ODFBuffer(ODF); //store in History[] for use on peak detection
+
+  //Now run through the 3 rules to call it an onset
+  ODFCondition1 = 0;
+  for (int i=0;i<w1;++i){
+    if (History[i+1]>ODFCondition1){
+      ODFCondition1=History[i+1];
+    }
+  }
   
+  if (ODF > ODFCondition1){
+    
+    ODFCondition2 = 0;
+    
+    for (int i=0; i<w3; ++i) {
+      ODFCondition2 += History[i+1];
+    }
+    
+    ODFCondition2 /= w3;
+
+    if (ODF > ODFCondition2+delta){
+    //Serial.println(ODF);
+    //Serial.println();
+    //Serial.println(ODFCondition2+delta);
+      if (nlastonset > w5){
+        
+        frameOnset = true;
+        nlastonset=0;
+      }
+      
+    }
+    
+  }
+  
+  nlastonset++;
   
   
   
@@ -409,27 +462,74 @@ void ledIntensity(){
   //sets the intensity of LED's based on scaledLog currently
   //intensities are held in the 'intensity' byte array
 
+//  ODF-=3;
+//  ODF = ODF < 0 ? 0 : ODF*20;
+//  ODF = ODF > 255 ? 255 : ODF;
+//  ODFhistory[1]=ODFhistory[0];
+//  if (ODF < .5* ODFhistory[1]){
+//    ODF=.5*ODFhistory[1];
+//    //FastLED.setBrightness(int(ODF));
+//    strip.setBrightness(byte(ODF));
+//  }
+//  else {
+//    ODF=(gam*ODF)+(1-gam)*ODFhistory[1];
+//    //FastLED.setBrightness(int(ODF));
+//    strip.setBrightness(byte(ODF));
+//  }
+//  ODFhistory[0]=ODF;
+//  strip.show();
+//  //Serial.println(byte(ODF));
 
-  //scaledBrightness= ODF< 0.0 ? 0.0 : scaledBrightness;
-  ODF-=5;
-  ODF = ODF < 0 ? 0 : ODF*5;
-  ODFhistory[1]=ODFhistory[0];
-  ODFhistory[0]=ODF;
-  ODF=(gam*ODF)+(1-gam)*ODFhistory[1];
-  strip.setBrightness(int(ODF));
-  strip.show();
+    if (frameOnset) {
+      bright = 100;
+      strip.setBrightness(bright);
+      strip.show();
+      frameOnset=false;
+    }
+    else{
+      bright *= .9;
+      strip.setBrightness(bright);
+      strip.show();      
+    }
 
   
 }
 
-void ledRainbow() {
+void ledRainbow(byte bright) {
   //sets the strip to a rainbow set of colors
+  
   for (int i=0;i<NUMPIXELS;++i){
-    strip.setPixelColor(i,strip.ColorHSV(65536/NUMPIXELS*i,255,255));
+    strip.setPixelColor(i,strip.ColorHSV(65535/NUMPIXELS*i,255,bright));
   }
   strip.show();
+
 }
 
-    
+void ODFBuffer (float nval) {
+
+  for (int i=historyCount-1;i>0;i=i-1){
+    History[i]=History[i-1];
+    //Serial.println(History[i]);
+  }
+  History[0]=nval;
+
 
   
+}
+
+void hannWindowCoeff(int size) {
+
+  for (int i=0;i<size;++i){
+    hannCoeff[i]=.5*(1- arm_cos_f32(2*M_PI*i/size));
+  }
+  
+}
+
+//void triggerShift () {
+//
+//    memmove(samples,samples+(300),(FFT_SIZE-300) * sizeof(*samples)); //moves sample #300 to samples[0]
+//    memcpy(samples+(FFT_SIZE-300),sampleHolder,300 * sizeof(*samples));
+//    sampleSetReady = true;
+//    sampleCounter = 0;
+//  
+//}
