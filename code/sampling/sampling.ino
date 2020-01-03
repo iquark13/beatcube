@@ -34,31 +34,35 @@ bool sampleHalfReady = false;         //half sample set ready
 // MEL Filter Initialization
 ////////////////////////////
 
-const int nfilt = 30;
-float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];
-float filter_banks;
-float mel_points[nfilt+2];
-const int lowFreq = 100; //hz
-const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));
-const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));
-float hz_points[nfilt+2];
-int bin[nfilt+2];
-float Xfilt[nfilt]={};
+const int nfilt = 30;                                           //Number of mel filter banks (20-40)
+float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];                 //Filterbank array, need nfilt X fft size +1
+float filter_banks;                                             //holder for filterbank calculations
+float mel_points[nfilt+2];                                      //individual mel_points (only used in setup, could hardcode if out of memory in progmem)
+const int lowFreq = 100;                                        //hz --> frequency at which first melbank starts
+const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));   //low frequency mel point.
+const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));   //high frequency mel_point
+float hz_points[nfilt+2];                                       //holder for frequency equivalents for mel points
+int bin[nfilt+2];                                               //bins for the mel points
+float Xfilt[nfilt]={};                                          //output for mel filtered FFT
 
-float hannCoeff[FFT_SIZE]; //holds the coefficients for the hann window function.
+float hannCoeff[FFT_SIZE];                                      //holds the coefficients for the hann window function.
 
 ////////////////////////////////////
 /////Deeper work with beat tracking
 ///////////////////////////////////
-float scaledLog[nfilt];
-float maxLog,minLog;
-float lambda = 5;
-float gam = 1.0; //sized for 150hz cutoff with 30kHz sampleing rate DO NOT USE THIS RIGHT NOW.
-float XlogHistory[nfilt]={};
-float ODF=0;
-float ODFhistory[2];
-const int historyCount=1000;
-float History[historyCount];
+float scaledLog[nfilt];             //This is a seperate array to hold the log filtered data --> you could do this in Xfilt instead if you wanted
+float maxLog,minLog;                //Old tracking holders, not necessary anymore
+float lambda = 5;                   //Lambda multiplier function for the scaledLog filter (range 1-20)
+float gam = 1.0;                    //sized for 150hz cutoff with 30kHz sampleing rate DO NOT USE THIS RIGHT NOW.
+float XlogHistory[nfilt]={0};       //Log history for calculating the spectral flux
+float ODF=0;                        //Onset Detection Function output
+float ODFhistory[2];                //History for the onset detection function
+const int historyCount=1000;        //How many ODF's to keep in the history
+float History[historyCount];        //Used for plotting the ODF history, and used in the 3 conditions of peak detection
+
+///////////////////////////////////
+/////Some debug stuff
+//////////////////////////////////
 byte test = 0;
 long int timer1;
 long int timer2;
@@ -69,13 +73,15 @@ long int timer3;
 //////////////////////////////////////////
 
 byte w1 = 3; //max frames
-byte w3 = 8; //mean frames
+byte w3 = 12; //mean frames
 byte w5 = 6; //how many frames between onsets
 float delta = .25;
 float ODFCondition1 = 0;
 float ODFCondition2 = 0;
 int nlastonset = 0;
+int nlastHistory = 0;
 bool frameOnset = false;
+bool bigHit = false;
 ////////////////////////////
 //LED Stuff
 ///////////////////////////
@@ -185,7 +191,7 @@ void loop() {
     // Restart audio sampling.
     timer1=micros()-timer1;
   }
-    
+
   // Parse any pending commands.
   parserLoop();
   
@@ -407,8 +413,8 @@ void scaleMaxMel() {
   //Equation #1 applied to the Mel Filtered signal
   for (int i =0;i<nfilt;++i){
     scaledLog[i]=log10(lambda*Xfilt[i] + 1.0);
-    maxLog = scaledLog[i]>maxLog ? scaledLog[i] : maxLog;
-    minLog = scaledLog[i]<minLog ? scaledLog[i] : minLog;
+//    maxLog = scaledLog[i]>maxLog ? scaledLog[i] : maxLog;
+//    minLog = scaledLog[i]<minLog ? scaledLog[i] : minLog;
   }
 
   //Now apply the half wave rectifier fuction on the history change
@@ -443,9 +449,18 @@ void scaleMaxMel() {
     //Serial.println();
     //Serial.println(ODFCondition2+delta);
       if (nlastonset > w5){
-        
+
+        if (maxLog < ODF){
+          maxLog = ODF;
+          bigHit = true;
+        }
+        else{
+          maxLog *=.9;
+        }
         frameOnset = true;
+        nlastHistory=nlastonset;
         nlastonset=0;
+        
       }
       
     }
@@ -481,7 +496,15 @@ void ledIntensity(){
 //  //Serial.println(byte(ODF));
 
     if (frameOnset) {
-      bright = 100;
+      if (bigHit){
+        bright = 100;
+        bigHit = false;
+      }
+      else{
+        bright = nlastHistory>11 ? 100 : min(bright * 1.5,100);  //softening the   
+      }
+      
+      //bright = 100;
       strip.setBrightness(bright);
       strip.show();
       frameOnset=false;
