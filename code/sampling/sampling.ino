@@ -38,7 +38,7 @@ const int nfilt = 30;                                           //Number of mel 
 float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];                 //Filterbank array, need nfilt X fft size +1
 float filter_banks;                                             //holder for filterbank calculations
 float mel_points[nfilt+2];                                      //individual mel_points (only used in setup, could hardcode if out of memory in progmem)
-const int lowFreq = 100;                                        //hz --> frequency at which first melbank starts
+const int lowFreq = 100;                                        //hz --> frequency at which first melbank starts 100 is old, 200 is new
 const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));   //low frequency mel point.
 const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));   //high frequency mel_point
 float hz_points[nfilt+2];                                       //holder for frequency equivalents for mel points
@@ -111,6 +111,21 @@ float32_t *mag = output;
 
 
 ////////////////////////////////////////////////////////////////////////////////
+// Animation Stuff
+////////////////////////////////////////////////////////////////////////////////
+
+int hues[NUMPIXELS]={0};
+const byte tail_size = 10;
+long int animation_timer = 0;
+byte animation_speed = 10;
+byte head_led = 1;
+byte min_increment = 30;
+
+bool rainbow_cylon = true;
+
+
+
+////////////////////////////////////////////////////////////////////////////////
 // MAIN SKETCH FUNCTIONS
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -145,6 +160,17 @@ void setup() {
   
   // Begin sampling audio
   samplingBegin();
+
+  //Setup Animation Parameters:
+  if (rainbow_cylon){
+  for (int i=0;i<NUMPIXELS;i++){
+    strip.setPixelColor(i,0,0,0);
+  }
+  strip.show();
+
+  //Start Amination timer
+  animation_timer = millis();
+  }
 }
 
 void loop() {
@@ -194,6 +220,28 @@ void loop() {
 
   // Parse any pending commands.
   parserLoop();
+
+  //Animation Work
+  if(rainbow_cylon){
+    if ((millis()-animation_timer)>animation_speed){
+
+      increment_cylon();
+
+      if (bright>min_increment){
+        if (head_led < NUMPIXELS+tail_size){
+          head_led++;
+        }
+        else{
+          head_led = 1;
+        }
+      }
+    animation_timer=millis();
+    }
+  }
+  
+  
+
+  
   
 }
 
@@ -455,7 +503,7 @@ void scaleMaxMel() {
           bigHit = true;
         }
         else{
-          maxLog *=.9;
+          maxLog *=.99;
         }
         frameOnset = true;
         nlastHistory=nlastonset;
@@ -499,9 +547,11 @@ void ledIntensity(){
       if (bigHit){
         bright = 100;
         bigHit = false;
+        
       }
       else{
-        bright = nlastHistory>11 ? 100 : min(bright * 1.5,100);  //softening the   
+        //bright = nlastHistory>11 ? 100 : min(bright * 1.5,100);  //softening the
+        bright = max(min(bright*1.5,100),50);   
       }
       
       //bright = 100;
@@ -523,6 +573,7 @@ void ledRainbow(byte bright) {
   
   for (int i=0;i<NUMPIXELS;++i){
     strip.setPixelColor(i,strip.ColorHSV(65535/NUMPIXELS*i,255,bright));
+    hues[i]=65535/NUMPIXELS*i;
   }
   strip.show();
 
@@ -546,6 +597,24 @@ void hannWindowCoeff(int size) {
     hannCoeff[i]=.5*(1- arm_cos_f32(2*M_PI*i/size));
   }
   
+}
+
+void increment_cylon(){
+  //head_led should hold the head of the train
+  //then you want to go back tail_size. Make sure not to go below 0, or above NUMPIXELS
+  if ((head_led > tail_size)&&(head_led<NUMPIXELS+tail_size)){
+    for (int i = head_led;i>=head_led-tail_size;i--){
+      strip.setPixelColor(i,strip.ColorHSV(hues[i],255,bright));
+    }
+    strip.setPixelColor(head_led-tail_size,0,0,0);
+  }
+
+  strip.show();
+}
+
+void clear_strip(){
+  //should clear the colors on the entire strip
+  strip.fill(strip.Color(0,0,0),0,strip.numPixels());
 }
 
 //void triggerShift () {
