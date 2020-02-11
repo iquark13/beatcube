@@ -38,7 +38,7 @@ const int nfilt = 30;                                           //Number of mel 
 float fbank[nfilt][int(floor(FFT_SIZE/2 + 1))];                 //Filterbank array, need nfilt X fft size +1
 float filter_banks;                                             //holder for filterbank calculations
 float mel_points[nfilt+2];                                      //individual mel_points (only used in setup, could hardcode if out of memory in progmem)
-const int lowFreq = 100;                                        //hz --> frequency at which first melbank starts 100 is old, 200 is new
+const int lowFreq = 150;                                        //hz --> frequency at which first melbank starts 100 is old, 200 is new
 const float low_freq_mel=2595.0 * log10(1.0+(lowFreq/700.0));   //low frequency mel point.
 const float high_freq_mel = 2595.0 * log10(1.0+((SAMPLE_RATE_HZ/2.0)/700.0));   //high frequency mel_point
 float hz_points[nfilt+2];                                       //holder for frequency equivalents for mel points
@@ -122,6 +122,9 @@ byte head_led = 1;
 byte min_increment = 30;
 
 bool rainbow_cylon = true;
+bool increasing_cylon = true;
+
+uint16_t hue_increment = 1;
 
 
 
@@ -192,7 +195,7 @@ void loop() {
     arm_rfft_fast_f32(&fft_inst, samp,mag,0);
 
     output[FFT_SIZE]=output[1]; //Packed nyquist frequency moved to end
-    output[1]=output[FFT_SIZE+1]=0;
+    output[1]=output[FFT_SIZE+1]=0; //Clearing dc offset
 
     arm_cmplx_mag_f32(output,magnitudes,FFT_SIZE/2+1);
 
@@ -227,14 +230,32 @@ void loop() {
 
       increment_cylon();
 
-      if (bright>min_increment){
-        if (head_led < NUMPIXELS+tail_size){
-          head_led++;
+      if(bright>min_increment){
+        if (increasing_cylon){
+          if (head_led < NUMPIXELS+tail_size){
+            head_led++;
+          }
+          else{
+            increasing_cylon=false;
+            head_led--;
+          }
         }
-        else{
-          head_led = 1;
+        else {
+          if (head_led > 0){
+            head_led--;
+          }
+          else{
+            increasing_cylon=true;
+            head_led++;
+          }
+          
         }
+        animation_speed = animation_speed <= 4 ? 4 : animation_speed*=.8 ;
       }
+      else{
+        animation_speed = animation_speed > 30 ? 30 : animation_speed*=1.26;
+      }
+
     animation_timer=millis();
     }
   }
@@ -243,7 +264,7 @@ void loop() {
 
   
   
-}
+} //End Void(loop)
 
 
 
@@ -525,24 +546,6 @@ void ledIntensity(){
   //sets the intensity of LED's based on scaledLog currently
   //intensities are held in the 'intensity' byte array
 
-//  ODF-=3;
-//  ODF = ODF < 0 ? 0 : ODF*20;
-//  ODF = ODF > 255 ? 255 : ODF;
-//  ODFhistory[1]=ODFhistory[0];
-//  if (ODF < .5* ODFhistory[1]){
-//    ODF=.5*ODFhistory[1];
-//    //FastLED.setBrightness(int(ODF));
-//    strip.setBrightness(byte(ODF));
-//  }
-//  else {
-//    ODF=(gam*ODF)+(1-gam)*ODFhistory[1];
-//    //FastLED.setBrightness(int(ODF));
-//    strip.setBrightness(byte(ODF));
-//  }
-//  ODFhistory[0]=ODF;
-//  strip.show();
-//  //Serial.println(byte(ODF));
-
     if (frameOnset) {
       if (bigHit){
         bright = 100;
@@ -560,7 +563,7 @@ void ledIntensity(){
       frameOnset=false;
     }
     else{
-      bright *= .9;
+      bright *= .90;
       strip.setBrightness(bright);
       strip.show();      
     }
@@ -602,13 +605,23 @@ void hannWindowCoeff(int size) {
 void increment_cylon(){
   //head_led should hold the head of the train
   //then you want to go back tail_size. Make sure not to go below 0, or above NUMPIXELS
-  if ((head_led > tail_size)&&(head_led<NUMPIXELS+tail_size)){
-    for (int i = head_led;i>=head_led-tail_size;i--){
-      strip.setPixelColor(i,strip.ColorHSV(hues[i],255,bright));
+  if (1==1){//(head_led > tail_size)&&(head_led<NUMPIXELS+tail_size)){
+    if (increasing_cylon){
+      for (int i = head_led;i>=head_led-tail_size;i--){
+          float value = pow(.85,(head_led-i));
+          strip.setPixelColor(i,strip.ColorHSV(hue_increment,255,bright*value));
+      }
+    }
+    else {
+      for (int i = head_led;i<=head_led+tail_size;i++){
+          float value = pow(.85,(i-head_led));
+          strip.setPixelColor(i,strip.ColorHSV(hue_increment,255,bright*value));
+      }
     }
     strip.setPixelColor(head_led-tail_size,0,0,0);
+    strip.setPixelColor(head_led+tail_size,0,0,0);
   }
-
+  hue_increment = hue_increment>65536 ? 1 : hue_increment+10;
   strip.show();
 }
 
